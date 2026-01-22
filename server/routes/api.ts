@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import type { Agent } from "../types";
-import { sessions, createSession, deleteSession, injectPluginDir } from "../services/sessionManager";
+import { sessions, createSession, deleteSession, injectPluginDir, registerExternalSession, getPluginDir } from "../services/sessionManager";
+import { broadcastControl } from "../index";
 import { loadState, saveState, savePositions, getDataDir } from "../services/persistence";
 import {
   loadConfig,
@@ -110,6 +111,10 @@ apiRoutes.get("/sessions", (c) => {
       customColor: session.customColor,
       notes: session.notes,
       isRestored: session.isRestored,
+      isExternal: session.isExternal, // External sessions not spawned by OpenUI
+      currentTool: session.currentTool,
+      currentToolInput: session.currentToolInput,
+      lastUserPrompt: session.lastUserPrompt,
       ticketId: session.ticketId,
       ticketTitle: session.ticketTitle,
     };
@@ -123,6 +128,82 @@ apiRoutes.get("/sessions/:sessionId/status", (c) => {
   if (!session) return c.json({ error: "Session not found" }, 404);
 
   return c.json({ status: session.status, isRestored: session.isRestored });
+});
+
+// Get transcript for external sessions
+apiRoutes.get("/sessions/:sessionId/transcript", async (c) => {
+  const { readFileSync, existsSync } = await import("fs");
+  const sessionId = c.req.param("sessionId");
+  const session = sessions.get(sessionId);
+
+  if (!session) return c.json({ error: "Session not found" }, 404);
+  if (!session.transcriptPath) {
+    return c.json({ error: "No transcript available", isExternal: session.isExternal }, 404);
+  }
+  if (!existsSync(session.transcriptPath)) {
+    return c.json({ error: "Transcript file not found" }, 404);
+  }
+
+  try {
+    const content = readFileSync(session.transcriptPath, "utf-8");
+    const lines = content.trim().split("\n").filter(Boolean);
+
+    // Parse JSONL and extract relevant messages
+    const messages: Array<{
+      type: string;
+      role?: string;
+      content?: string;
+      tool?: string;
+      timestamp?: string;
+    }> = [];
+
+    for (const line of lines) {
+      try {
+        const entry = JSON.parse(line);
+
+        // Extract human/assistant messages
+        if (entry.type === "human" || entry.type === "user") {
+          messages.push({
+            type: "user",
+            content: typeof entry.message === "string" ? entry.message : entry.message?.content || JSON.stringify(entry.message),
+            timestamp: entry.timestamp,
+          });
+        } else if (entry.type === "assistant") {
+          const content = entry.message?.content;
+          if (Array.isArray(content)) {
+            // Handle content blocks (text, tool_use, etc.)
+            for (const block of content) {
+              if (block.type === "text") {
+                messages.push({ type: "assistant", content: block.text, timestamp: entry.timestamp });
+              } else if (block.type === "tool_use") {
+                messages.push({ type: "tool", tool: block.name, content: JSON.stringify(block.input, null, 2), timestamp: entry.timestamp });
+              }
+            }
+          } else if (typeof content === "string") {
+            messages.push({ type: "assistant", content, timestamp: entry.timestamp });
+          }
+        } else if (entry.type === "tool_result") {
+          // Tool results
+          messages.push({
+            type: "tool_result",
+            tool: entry.tool_use_id,
+            content: typeof entry.content === "string" ? entry.content : JSON.stringify(entry.content),
+            timestamp: entry.timestamp,
+          });
+        }
+      } catch {
+        // Skip malformed lines
+      }
+    }
+
+    return c.json({
+      transcriptPath: session.transcriptPath,
+      messageCount: messages.length,
+      messages: messages.slice(-50), // Last 50 messages
+    });
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500);
+  }
 });
 
 apiRoutes.get("/state", (c) => {
@@ -155,6 +236,60 @@ apiRoutes.post("/state/positions", async (c) => {
   // Save to disk
   savePositions(positions);
   return c.json({ success: true });
+});
+
+// Register an external session (not spawned by OpenUI)
+apiRoutes.post("/sessions/register", async (c) => {
+  const body = await c.req.json();
+  const { sessionId, claudeSessionId, cwd, customName, nodeId } = body;
+
+  if (!sessionId) {
+    return c.json({ error: "sessionId is required" }, 400);
+  }
+
+  const session = registerExternalSession({
+    sessionId,
+    claudeSessionId,
+    cwd: cwd || LAUNCH_CWD,
+    customName,
+    nodeId,
+  });
+
+  saveState(sessions);
+
+  // Broadcast new session to all control clients
+  broadcastControl({
+    type: "session_added",
+    session: {
+      sessionId,
+      nodeId: session.nodeId,
+      agentId: session.agentId,
+      agentName: session.agentName,
+      cwd: session.cwd,
+      gitBranch: session.gitBranch,
+      status: session.status,
+      isExternal: true,
+      customName: session.customName,
+      createdAt: session.createdAt,
+    },
+  });
+
+  return c.json({
+    sessionId,
+    nodeId: session.nodeId,
+    cwd: session.cwd,
+    gitBranch: session.gitBranch,
+    isExternal: true,
+  });
+});
+
+// Get plugin directory path (for external session setup)
+apiRoutes.get("/plugin-info", (c) => {
+  const pluginDir = getPluginDir();
+  return c.json({
+    pluginDir,
+    hasPlugin: !!pluginDir,
+  });
 });
 
 apiRoutes.post("/sessions", async (c) => {
@@ -202,6 +337,26 @@ apiRoutes.post("/sessions", async (c) => {
   });
 
   saveState(sessions);
+
+  // Broadcast new session
+  broadcastControl({
+    type: "session_added",
+    session: {
+      sessionId,
+      nodeId,
+      agentId,
+      agentName,
+      command,
+      cwd: result.cwd,
+      gitBranch: result.gitBranch,
+      status: "idle",
+      isExternal: false,
+      customName,
+      customColor,
+      createdAt: new Date().toISOString(),
+    },
+  });
+
   return c.json({
     sessionId,
     nodeId,
@@ -291,7 +446,7 @@ apiRoutes.delete("/sessions/:sessionId", (c) => {
 // Status update endpoint for Claude Code plugin
 apiRoutes.post("/status-update", async (c) => {
   const body = await c.req.json();
-  const { status, openuiSessionId, claudeSessionId, cwd, hookEvent, toolName, stopReason } = body;
+  const { status, openuiSessionId, claudeSessionId, cwd, hookEvent, toolName, toolInput, userPrompt, stopReason, transcriptPath } = body;
 
   // Log the full raw payload for debugging
   log(`\x1b[38;5;82m[plugin-hook]\x1b[0m ${hookEvent || 'unknown'}: status=${status} tool=${toolName || 'none'} openui=${openuiSessionId || 'none'}`);
@@ -327,11 +482,23 @@ apiRoutes.post("/status-update", async (c) => {
     // Handle pre_tool/post_tool for permission detection
     let effectiveStatus = status;
 
+    // Store user prompt if provided (from UserPromptSubmit)
+    if (userPrompt) {
+      session.lastUserPrompt = userPrompt;
+    }
+
+    // Store transcript path if provided (for external session history)
+    if (transcriptPath && !session.transcriptPath) {
+      session.transcriptPath = transcriptPath;
+      log(`\x1b[38;5;141m[plugin]\x1b[0m Transcript path for ${openuiSessionId || claudeSessionId}: ${transcriptPath}`);
+    }
+
     if (status === "pre_tool") {
       // PreToolUse fired - tool is about to run (or waiting for permission)
       // Stay as running, track the tool, and start a timer
       effectiveStatus = "running";
       session.currentTool = toolName;
+      session.currentToolInput = toolInput;
       session.preToolTime = Date.now();
 
       // Clear any existing permission timeout
@@ -384,23 +551,91 @@ apiRoutes.post("/status-update", async (c) => {
     session.lastPluginStatusTime = Date.now();
     session.lastHookEvent = hookEvent;
 
-    // Broadcast status change to connected clients
+    // Broadcast status change to connected session clients
     for (const client of session.clients) {
       if (client.readyState === 1) {
         client.send(JSON.stringify({
           type: "status",
           status: session.status,
           isRestored: session.isRestored,
+          isExternal: session.isExternal,
           currentTool: session.currentTool,
+          currentToolInput: session.currentToolInput,
+          lastUserPrompt: session.lastUserPrompt,
           hookEvent: hookEvent,
         }));
       }
     }
 
+    // Broadcast to control clients for global status updates
+    broadcastControl({
+      type: "session_updated",
+      sessionId: openuiSessionId || claudeSessionId,
+      nodeId: session.nodeId,
+      status: session.status,
+      currentTool: session.currentTool,
+      lastUserPrompt: session.lastUserPrompt,
+    });
+
     return c.json({ success: true });
   }
 
-  // No session found
+  // No session found - auto-register as external session if we have enough info
+  if (openuiSessionId || claudeSessionId) {
+    // Use openuiSessionId if available, otherwise generate from claudeSessionId
+    const newSessionId = openuiSessionId || `external-${claudeSessionId || Date.now()}`;
+
+    log(`\x1b[38;5;141m[plugin]\x1b[0m Auto-registering external session: ${newSessionId} (claude: ${claudeSessionId || 'unknown'})`);
+
+    session = registerExternalSession({
+      sessionId: newSessionId,
+      claudeSessionId,
+      cwd: cwd || LAUNCH_CWD,
+      customName: `External (${claudeSessionId ? claudeSessionId.slice(0, 8) : 'auto'})`,
+    });
+
+    // Apply the status update to the newly registered session
+    session.status = status === "pre_tool" || status === "post_tool" ? "running" : status;
+    session.pluginReportedStatus = true;
+    session.lastPluginStatusTime = Date.now();
+    session.lastHookEvent = hookEvent;
+
+    if (toolName) {
+      session.currentTool = toolName;
+    }
+
+    if (transcriptPath) {
+      session.transcriptPath = transcriptPath;
+    }
+
+    saveState(sessions);
+
+    // Broadcast new auto-registered session
+    broadcastControl({
+      type: "session_added",
+      session: {
+        sessionId: newSessionId,
+        nodeId: session.nodeId,
+        agentId: session.agentId,
+        agentName: session.agentName,
+        cwd: session.cwd,
+        gitBranch: session.gitBranch,
+        status: session.status,
+        isExternal: true,
+        customName: session.customName,
+        createdAt: session.createdAt,
+        currentTool: session.currentTool,
+      },
+    });
+
+    return c.json({
+      success: true,
+      registered: true,
+      sessionId: newSessionId,
+      nodeId: session.nodeId,
+    });
+  }
+
   log(`\x1b[38;5;141m[plugin]\x1b[0m Status update (no session): ${status} for openui:${openuiSessionId} claude:${claudeSessionId}`);
   return c.json({ success: true, warning: "No matching session found" });
 });

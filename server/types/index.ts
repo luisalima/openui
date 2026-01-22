@@ -24,6 +24,7 @@ export interface Session {
   notes?: string;
   nodeId: string;
   isRestored?: boolean;
+  isExternal?: boolean; // External sessions not spawned by OpenUI
   position?: { x: number; y: number };
   // Linear ticket info
   ticketId?: string;
@@ -36,8 +37,14 @@ export interface Session {
   claudeSessionId?: string;
   // Current tool being used (from plugin)
   currentTool?: string;
+  // Tool input (for external sessions visibility)
+  currentToolInput?: any;
+  // Last user prompt (truncated, from plugin)
+  lastUserPrompt?: string;
   // Last hook event received
   lastHookEvent?: string;
+  // Claude Code transcript path (for external sessions)
+  transcriptPath?: string;
   // Permission detection
   preToolTime?: number;
   permissionTimeout?: ReturnType<typeof setTimeout>;
@@ -73,6 +80,7 @@ export interface PersistedNode {
   customName?: string;
   customColor?: string;
   notes?: string;
+  isExternal?: boolean;
   position: { x: number; y: number };
 }
 

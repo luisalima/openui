@@ -54,6 +54,7 @@ export function saveState(sessions: Map<string, Session>) {
       customColor: session.customColor,
       notes: session.notes,
       icon: session.icon,
+      isExternal: session.isExternal,
       position: session.position || existingNode?.position || { x: 0, y: 0 },
     });
 

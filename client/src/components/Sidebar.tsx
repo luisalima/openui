@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import { useStore, AgentStatus } from "../stores/useStore";
 import { Terminal } from "./Terminal";
+import { TranscriptViewer } from "./TranscriptViewer";
 
 const statusConfig: Record<AgentStatus, { label: string; color: string }> = {
   running: { label: "Running", color: "#22C55E" },
@@ -318,12 +319,19 @@ export function Sidebar() {
             )}
           </AnimatePresence>
 
-          {/* Terminal */}
+          {/* Terminal or Transcript */}
           <div className="flex-1 flex flex-col min-h-0">
             <div className="flex-shrink-0 px-4 py-2 border-b border-border flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <TerminalIcon className="w-3.5 h-3.5 text-zinc-500" />
-                <span className="text-xs text-zinc-500">Terminal</span>
+                <span className="text-xs text-zinc-500">
+                  {session.isExternal ? "Transcript" : "Terminal"}
+                </span>
+                {session.isExternal && (
+                  <span className="text-[9px] px-1.5 py-0.5 rounded bg-orange-500/20 text-orange-400 uppercase tracking-wider">
+                    External
+                  </span>
+                )}
               </div>
               <div className="flex items-center gap-1">
                 <div className="w-2.5 h-2.5 rounded-full bg-[#FF5F56]" />
@@ -333,12 +341,20 @@ export function Sidebar() {
             </div>
 
             <div className="flex-1 min-h-0 bg-[#0d0d0d]">
-              <Terminal
-                key={`${session.sessionId}-${terminalKey}`}
-                sessionId={session.sessionId}
-                color={displayColor}
-                nodeId={selectedNodeId!}
-              />
+              {session.isExternal ? (
+                <TranscriptViewer
+                  key={`${session.sessionId}-transcript-${terminalKey}`}
+                  sessionId={session.sessionId}
+                  color={displayColor}
+                />
+              ) : (
+                <Terminal
+                  key={`${session.sessionId}-${terminalKey}`}
+                  sessionId={session.sessionId}
+                  color={displayColor}
+                  nodeId={selectedNodeId!}
+                />
+              )}
             </div>
 
           </div>

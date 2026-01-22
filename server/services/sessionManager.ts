@@ -11,7 +11,7 @@ const log = QUIET ? () => {} : console.log.bind(console);
 const logError = QUIET ? () => {} : console.error.bind(console);
 
 // Get the OpenUI plugin directory path
-function getPluginDir(): string | null {
+export function getPluginDir(): string | null {
   // Check for plugin in ~/.openui/claude-code-plugin (installed via curl)
   const homePluginDir = join(homedir(), ".openui", "claude-code-plugin");
   const homePluginJson = join(homePluginDir, ".claude-plugin", "plugin.json");
@@ -382,6 +382,55 @@ export function deleteSession(sessionId: string) {
   return true;
 }
 
+// Register an external session that was not spawned by OpenUI
+// This creates a session entry without a PTY - status updates come from plugin
+export function registerExternalSession(params: {
+  sessionId: string;
+  claudeSessionId?: string;
+  cwd?: string;
+  nodeId?: string;
+  customName?: string;
+}): Session {
+  const { sessionId, claudeSessionId, cwd, nodeId, customName } = params;
+
+  // Check if session already exists
+  const existing = sessions.get(sessionId);
+  if (existing) {
+    log(`\x1b[38;5;141m[external]\x1b[0m Session ${sessionId} already exists, updating`);
+    if (claudeSessionId) existing.claudeSessionId = claudeSessionId;
+    return existing;
+  }
+
+  const gitBranch = cwd ? getGitBranch(cwd) : null;
+  const generatedNodeId = nodeId || `external-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+
+  const session: Session = {
+    pty: null, // No PTY for external sessions
+    agentId: "claude",
+    agentName: "Claude Code (External)",
+    command: "claude", // We don't know the actual command
+    cwd: cwd || process.cwd(),
+    gitBranch: gitBranch || undefined,
+    createdAt: new Date().toISOString(),
+    clients: new Set(),
+    outputBuffer: [],
+    status: "idle",
+    lastOutputTime: Date.now(),
+    lastInputTime: 0,
+    recentOutputSize: 0,
+    customName: customName || "External Session",
+    nodeId: generatedNodeId,
+    isRestored: false,
+    isExternal: true, // Mark as external
+    claudeSessionId,
+  };
+
+  sessions.set(sessionId, session);
+  log(`\x1b[38;5;141m[external]\x1b[0m Registered external session ${sessionId} (claude: ${claudeSessionId || 'unknown'})`);
+  return session;
+}
+
+
 export function restoreSessions() {
   const { loadState } = require("./persistence");
   const state = loadState();
@@ -411,6 +460,7 @@ export function restoreSessions() {
       notes: node.notes,
       nodeId: node.nodeId,
       isRestored: true,
+      isExternal: node.isExternal,
     };
 
     sessions.set(node.sessionId, session);

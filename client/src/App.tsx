@@ -73,34 +73,109 @@ function AppContent() {
       .catch(console.error);
   }, [setAgents, setLaunchCwd]);
 
-  // Poll for status updates every second to catch any missed WebSocket messages
+  // Connect to control WebSocket for real-time session updates
   useEffect(() => {
-    const pollStatus = async () => {
-      try {
-        const res = await fetch("/api/sessions");
-        if (res.ok) {
-          const sessionsData = await res.json();
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const wsUrl = `${protocol}//${window.location.host}/ws/control`;
+    let ws: WebSocket | null = null;
+    let reconnectTimeout: ReturnType<typeof setTimeout>;
+
+    const connect = () => {
+      ws = new WebSocket(wsUrl);
+
+      ws.onopen = () => {
+        console.log("[control-ws] Connected");
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
           const currentSessions = useStore.getState().sessions;
-          for (const sessionData of sessionsData) {
-            if (sessionData.nodeId && sessionData.status) {
-              const existing = currentSessions.get(sessionData.nodeId);
-              if (existing && existing.status !== sessionData.status) {
-                console.log(`[poll] Updating ${sessionData.nodeId} status: ${existing.status} -> ${sessionData.status}`);
-                updateSession(sessionData.nodeId, { status: sessionData.status });
+          const currentNodes = useStore.getState().nodes;
+
+          if (msg.type === "session_added") {
+            const sessionData = msg.session;
+            if (!currentSessions.has(sessionData.nodeId)) {
+              console.log(`[control-ws] New session: ${sessionData.nodeId}`);
+              const agent = agents.find((a) => a.id === sessionData.agentId);
+
+              // Add to sessions store
+              addSession(sessionData.nodeId, {
+                id: sessionData.nodeId,
+                sessionId: sessionData.sessionId,
+                agentId: sessionData.agentId,
+                agentName: sessionData.agentName,
+                command: sessionData.command || "",
+                color: sessionData.customColor || agent?.color || "#F97316",
+                createdAt: sessionData.createdAt,
+                cwd: sessionData.cwd,
+                gitBranch: sessionData.gitBranch,
+                status: sessionData.status || "idle",
+                customName: sessionData.customName,
+                isExternal: sessionData.isExternal,
+                currentTool: sessionData.currentTool,
+              });
+
+              // Add node to canvas
+              const nodeCount = currentNodes.filter(n => n.type === "agent").length;
+              const newNode = {
+                id: sessionData.nodeId,
+                type: "agent",
+                position: {
+                  x: 100 + (nodeCount % 5) * 220,
+                  y: 100 + Math.floor(nodeCount / 5) * 150,
+                },
+                data: {
+                  label: sessionData.customName || sessionData.agentName,
+                  agentId: sessionData.agentId,
+                  color: sessionData.customColor || agent?.color || "#F97316",
+                  icon: agent?.icon || "sparkles",
+                  sessionId: sessionData.sessionId,
+                },
+              };
+              setStoreNodes([...currentNodes, newNode]);
+            }
+          } else if (msg.type === "session_updated") {
+            // Find session by nodeId
+            const existing = currentSessions.get(msg.nodeId);
+            if (existing) {
+              const updates: Partial<typeof existing> = {};
+              if (msg.status && existing.status !== msg.status) {
+                updates.status = msg.status;
+              }
+              if (msg.currentTool !== undefined) {
+                updates.currentTool = msg.currentTool;
+              }
+              if (msg.lastUserPrompt !== undefined) {
+                updates.lastUserPrompt = msg.lastUserPrompt;
+              }
+              if (Object.keys(updates).length > 0) {
+                updateSession(msg.nodeId, updates);
               }
             }
           }
+        } catch (e) {
+          console.error("[control-ws] Parse error:", e);
         }
-      } catch (e) {
-        // Ignore errors
-      }
+      };
+
+      ws.onclose = () => {
+        console.log("[control-ws] Disconnected, reconnecting...");
+        reconnectTimeout = setTimeout(connect, 2000);
+      };
+
+      ws.onerror = () => {
+        ws?.close();
+      };
     };
 
-    // Poll immediately and then every second
-    pollStatus();
-    const interval = setInterval(pollStatus, 1000);
-    return () => clearInterval(interval);
-  }, [updateSession]);
+    connect();
+
+    return () => {
+      clearTimeout(reconnectTimeout);
+      ws?.close();
+    };
+  }, [updateSession, addSession, agents, setStoreNodes]);
 
   // Restore sessions and categories after agents are loaded
   useEffect(() => {

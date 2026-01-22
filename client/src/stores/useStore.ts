@@ -28,11 +28,14 @@ export interface AgentSession {
   customColor?: string;
   notes?: string;
   isRestored?: boolean;
+  isExternal?: boolean; // External sessions not spawned by OpenUI
   // Linear ticket info
   ticketId?: string;
   ticketTitle?: string;
   // Current tool being used (from plugin)
   currentTool?: string;
+  currentToolInput?: any;
+  lastUserPrompt?: string;
 }
 
 interface AppState {

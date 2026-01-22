@@ -23,7 +23,8 @@
   ],
   "type": "module",
   "bin": {
-    "openui": "./bin/openui.ts"
+    "openui": "./bin/openui.ts",
+    "openui-connect": "./bin/openui-connect.ts"
   },
   "files": [
     "bin/",

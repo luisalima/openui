@@ -14,6 +14,19 @@ const QUIET = !!process.env.OPENUI_QUIET;
 // Conditionally log only in dev mode
 const log = QUIET ? () => {} : console.log.bind(console);
 
+// Global control WebSocket clients (for broadcasting session events)
+export const controlClients = new Set<ServerWebSocket<WebSocketData>>();
+
+// Broadcast to all control clients
+export function broadcastControl(event: { type: string; [key: string]: any }) {
+  const message = JSON.stringify(event);
+  for (const client of controlClients) {
+    if (client.readyState === 1) {
+      client.send(message);
+    }
+  }
+}
+
 // Middleware
 app.use("*", cors());
 
@@ -29,6 +42,14 @@ Bun.serve<WebSocketData>({
   fetch(req, server) {
     const url = new URL(req.url);
 
+    // Global control WebSocket for session events
+    if (url.pathname === "/ws/control") {
+      const upgraded = server.upgrade(req, { data: { sessionId: "_control" } });
+      if (upgraded) return undefined;
+      return new Response("WebSocket upgrade failed", { status: 400 });
+    }
+
+    // Per-session WebSocket for terminal I/O
     if (url.pathname === "/ws") {
       const sessionId = url.searchParams.get("sessionId");
       if (!sessionId) return new Response("Session ID required", { status: 400 });
@@ -46,6 +67,14 @@ Bun.serve<WebSocketData>({
   websocket: {
     open(ws) {
       const { sessionId } = ws.data;
+
+      // Handle control WebSocket
+      if (sessionId === "_control") {
+        controlClients.add(ws);
+        log(`\x1b[38;5;245m[ws]\x1b[0m Control client connected (${controlClients.size} total)`);
+        return;
+      }
+
       const session = sessions.get(sessionId);
 
       if (!session) {
@@ -74,6 +103,10 @@ Bun.serve<WebSocketData>({
     },
     message(ws, message) {
       const { sessionId } = ws.data;
+
+      // Control clients don't send messages (yet)
+      if (sessionId === "_control") return;
+
       const session = sessions.get(sessionId);
       if (!session) return;
 
@@ -98,6 +131,14 @@ Bun.serve<WebSocketData>({
     },
     close(ws) {
       const { sessionId } = ws.data;
+
+      // Handle control client disconnect
+      if (sessionId === "_control") {
+        controlClients.delete(ws);
+        log(`\x1b[38;5;245m[ws]\x1b[0m Control client disconnected (${controlClients.size} total)`);
+        return;
+      }
+
       const session = sessions.get(sessionId);
       if (session) {
         session.clients.delete(ws);
@@ -112,6 +153,20 @@ restoreSessions();
 
 log(`\x1b[38;5;141m[server]\x1b[0m Running on http://localhost:${PORT}`);
 log(`\x1b[38;5;245m[server]\x1b[0m Launch directory: ${process.env.LAUNCH_CWD || process.cwd()}`);
+
+// Auto-open browser if OPENUI_OPEN_BROWSER is set
+if (process.env.OPENUI_OPEN_BROWSER === "1") {
+  setTimeout(async () => {
+    const { $ } = await import("bun");
+    const platform = process.platform;
+    const cmd = platform === "darwin" ? "open" : platform === "win32" ? "start" : "xdg-open";
+    try {
+      await $`${cmd} http://localhost:${PORT}`.quiet();
+    } catch {
+      // Ignore errors
+    }
+  }, 500);
+}
 
 // Periodic state save
 setInterval(() => {

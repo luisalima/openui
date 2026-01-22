@@ -116,10 +116,13 @@ export function TranscriptViewer({ sessionId, color: _color }: TranscriptViewerP
 
   // Filter messages based on search query
   const filteredMessages = searchQuery
-    ? messages.filter(msg =>
-        msg.content?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        msg.tool?.toLowerCase().includes(searchQuery.toLowerCase())
-      )
+    ? messages.filter(msg => {
+        const content = typeof msg.content === "string"
+          ? msg.content
+          : JSON.stringify(msg.content);
+        return content?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+          msg.tool?.toLowerCase().includes(searchQuery.toLowerCase());
+      })
     : messages;
 
   // Auto-scroll to bottom when new messages arrive
@@ -135,7 +138,11 @@ export function TranscriptViewer({ sessionId, color: _color }: TranscriptViewerP
     const isTool = msg.type === "tool";
     const isToolResult = msg.type === "tool_result";
     const isExpanded = expandedTools.has(index);
-    const hasLongContent = (msg.content?.length || 0) > 500;
+    // Ensure content is a string (it might be an object for tool results)
+    const contentStr = typeof msg.content === "string"
+      ? msg.content
+      : JSON.stringify(msg.content, null, 2);
+    const hasLongContent = (contentStr?.length || 0) > 500;
 
     return (
       <div
@@ -187,7 +194,7 @@ export function TranscriptViewer({ sessionId, color: _color }: TranscriptViewerP
               </div>
               {/* Copy button */}
               <button
-                onClick={() => copyToClipboard(msg.content || "")}
+                onClick={() => copyToClipboard(contentStr || "")}
                 className="opacity-0 group-hover:opacity-100 p-1 hover:bg-zinc-800 rounded transition-opacity"
                 title="Copy to clipboard"
               >
@@ -219,14 +226,14 @@ export function TranscriptViewer({ sessionId, color: _color }: TranscriptViewerP
                   <pre className={`whitespace-pre-wrap font-mono text-[10px] bg-black/30 rounded p-2 overflow-x-auto ${
                     isExpanded ? "max-h-none" : "max-h-32"
                   } overflow-y-auto`}>
-                    {isExpanded ? msg.content : msg.content?.slice(0, 500)}
+                    {isExpanded ? contentStr : contentStr?.slice(0, 500)}
                     {!isExpanded && hasLongContent && "..."}
                   </pre>
                 </div>
               ) : (
                 <p className="whitespace-pre-wrap">
-                  {msg.content?.slice(0, 1000)}
-                  {(msg.content?.length || 0) > 1000 && "..."}
+                  {contentStr?.slice(0, 1000)}
+                  {(contentStr?.length || 0) > 1000 && "..."}
                 </p>
               )}
             </div>

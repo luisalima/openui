@@ -186,6 +186,9 @@ apiRoutes.get("/sessions", (c) => {
       lastUserPrompt: session.lastUserPrompt,
       ticketId: session.ticketId,
       ticketTitle: session.ticketTitle,
+      // External session fields
+      claudeSessionId: session.claudeSessionId,
+      transcriptPath: session.transcriptPath,
     };
   });
   return c.json(sessionList);
@@ -531,7 +534,7 @@ apiRoutes.post("/status-update", async (c) => {
   const { status, openuiSessionId, claudeSessionId, cwd, hookEvent, toolName, toolInput, userPrompt, stopReason, transcriptPath } = body;
 
   // Log hook event (concise)
-  log(`\x1b[38;5;82m[plugin-hook]\x1b[0m ${hookEvent || 'unknown'}: status=${status} tool=${toolName || 'none'} openui=${openuiSessionId || 'none'}`);
+  log(`\x1b[38;5;82m[plugin-hook]\x1b[0m ${hookEvent || 'unknown'}: status=${status} tool=${toolName || 'none'} openui=${openuiSessionId || 'none'} claude=${claudeSessionId || 'none'}`);
 
   // Only log full payload in debug mode, with sensitive data redacted
   if (DEBUG_PLUGIN) {

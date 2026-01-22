@@ -482,7 +482,7 @@ export function restoreSessions() {
       notes: node.notes,
       nodeId: node.nodeId,
       isRestored: true,
-      isExternal: node.isExternal,
+      isExternal: node.isExternal ?? node.sessionId.startsWith("external-"),
       // Restore external session fields for reconnection
       claudeSessionId: node.claudeSessionId,
       transcriptPath: node.transcriptPath,

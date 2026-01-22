@@ -231,6 +231,7 @@ function AppContent() {
             customColor: session.customColor,
             notes: session.notes,
             isRestored: session.isRestored,
+            isExternal: session.isExternal,
             ticketId: session.ticketId,
             ticketTitle: session.ticketTitle,
           });

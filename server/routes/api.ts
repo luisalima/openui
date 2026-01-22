@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { Agent } from "../types";
-import { sessions, createSession, deleteSession, injectPluginDir, registerExternalSession, getPluginDir } from "../services/sessionManager";
-import { broadcastControl } from "../index";
+import { sessions, createSession, deleteSession, injectPluginDir, registerExternalSession, getPluginDir, findByClaudeSessionId, indexClaudeSession } from "../services/sessionManager";
+import { broadcastControl, broadcastTranscript } from "../index";
 import { loadState, saveState, savePositions, getDataDir } from "../services/persistence";
 import {
   loadConfig,
@@ -16,8 +16,77 @@ import {
 
 const LAUNCH_CWD = process.env.LAUNCH_CWD || process.cwd();
 const QUIET = !!process.env.OPENUI_QUIET;
+const DEBUG_PLUGIN = process.env.OPENUI_DEBUG_PLUGIN === "true"; // Enable verbose plugin logging
+const OPENUI_SECRET = process.env.OPENUI_SECRET || ""; // Shared secret for plugin auth
 const log = QUIET ? () => {} : console.log.bind(console);
 const logError = QUIET ? () => {} : console.error.bind(console);
+
+// Patterns to redact from logs (e.g., API keys, passwords, secrets)
+const SENSITIVE_PATTERNS = [
+  /api[_-]?key["']?\s*[:=]\s*["']?[\w-]+/gi,
+  /password["']?\s*[:=]\s*["'][^"']+/gi,
+  /secret["']?\s*[:=]\s*["']?[\w-]+/gi,
+  /token["']?\s*[:=]\s*["']?[\w.-]+/gi,
+  /bearer\s+[\w.-]+/gi,
+  /authorization["']?\s*[:=]\s*["'][^"']+/gi,
+];
+
+// Redact sensitive data from a string for logging
+function redactSensitive(str: string): string {
+  let result = str;
+  for (const pattern of SENSITIVE_PATTERNS) {
+    result = result.replace(pattern, "[REDACTED]");
+  }
+  return result;
+}
+
+// Validate authentication header if secret is configured
+function validateAuth(c: any): boolean {
+  if (!OPENUI_SECRET) return true; // No auth required if no secret configured
+  const authHeader = c.req.header("X-OpenUI-Secret");
+  return authHeader === OPENUI_SECRET;
+}
+
+// Apply status update to a session (consolidates logic for both existing and new sessions)
+function applyStatusUpdate(
+  session: any,
+  status: string,
+  hookEvent?: string,
+  toolName?: string,
+  toolInput?: any,
+  userPrompt?: string,
+  transcriptPath?: string
+): string {
+  // Determine effective status
+  let effectiveStatus = status;
+  if (status === "pre_tool" || status === "post_tool") {
+    effectiveStatus = "running";
+  }
+
+  // Apply common fields
+  session.status = effectiveStatus;
+  session.pluginReportedStatus = true;
+  session.lastPluginStatusTime = Date.now();
+  session.lastHookEvent = hookEvent;
+
+  if (userPrompt) {
+    session.lastUserPrompt = userPrompt;
+  }
+
+  if (transcriptPath && !session.transcriptPath) {
+    session.transcriptPath = transcriptPath;
+  }
+
+  if (toolName) {
+    session.currentTool = toolName;
+  }
+
+  if (toolInput !== undefined) {
+    session.currentToolInput = toolInput;
+  }
+
+  return effectiveStatus;
+}
 
 export const apiRoutes = new Hono();
 
@@ -240,8 +309,14 @@ apiRoutes.post("/state/positions", async (c) => {
 
 // Register an external session (not spawned by OpenUI)
 apiRoutes.post("/sessions/register", async (c) => {
+  // Validate authentication if secret is configured
+  if (!validateAuth(c)) {
+    log(`\x1b[38;5;196m[register-auth]\x1b[0m Unauthorized registration attempt`);
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
   const body = await c.req.json();
-  const { sessionId, claudeSessionId, cwd, customName, nodeId } = body;
+  const { sessionId, claudeSessionId, cwd, customName, customColor, nodeId } = body;
 
   if (!sessionId) {
     return c.json({ error: "sessionId is required" }, 400);
@@ -252,6 +327,7 @@ apiRoutes.post("/sessions/register", async (c) => {
     claudeSessionId,
     cwd: cwd || LAUNCH_CWD,
     customName,
+    customColor,
     nodeId,
   });
 
@@ -311,7 +387,7 @@ apiRoutes.post("/sessions", async (c) => {
     createWorktree: createWorktreeFlag,
   } = body;
 
-  const sessionId = `session-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  const sessionId = `session-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
   const workingDir = cwd || LAUNCH_CWD;
 
   // Load ticket prompt template from Linear config
@@ -445,12 +521,22 @@ apiRoutes.delete("/sessions/:sessionId", (c) => {
 
 // Status update endpoint for Claude Code plugin
 apiRoutes.post("/status-update", async (c) => {
+  // Validate authentication if secret is configured
+  if (!validateAuth(c)) {
+    log(`\x1b[38;5;196m[plugin-auth]\x1b[0m Unauthorized status update attempt`);
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
   const body = await c.req.json();
   const { status, openuiSessionId, claudeSessionId, cwd, hookEvent, toolName, toolInput, userPrompt, stopReason, transcriptPath } = body;
 
-  // Log the full raw payload for debugging
+  // Log hook event (concise)
   log(`\x1b[38;5;82m[plugin-hook]\x1b[0m ${hookEvent || 'unknown'}: status=${status} tool=${toolName || 'none'} openui=${openuiSessionId || 'none'}`);
-  log(`\x1b[38;5;245m[plugin-raw]\x1b[0m ${JSON.stringify(body, null, 2)}`);
+
+  // Only log full payload in debug mode, with sensitive data redacted
+  if (DEBUG_PLUGIN) {
+    log(`\x1b[38;5;245m[plugin-raw]\x1b[0m ${redactSensitive(JSON.stringify(body, null, 2))}`);
+  }
 
   if (!status) {
     return c.json({ error: "status is required" }, 400);
@@ -463,20 +549,33 @@ apiRoutes.post("/status-update", async (c) => {
     session = sessions.get(openuiSessionId);
   }
 
-  // Fallback: Try to match by Claude session ID (for older plugin versions)
+  // Fallback: Use index for O(1) claudeSessionId lookup
   if (!session && claudeSessionId) {
-    for (const [id, s] of sessions) {
-      if (s.claudeSessionId === claudeSessionId) {
-        session = s;
-        break;
-      }
-    }
+    session = findByClaudeSessionId(claudeSessionId);
   }
 
   if (session) {
+    // Mark session as reconnected if it was restored
+    if (session.isRestored && session.isExternal) {
+      session.isRestored = false;
+      log(`\x1b[38;5;82m[plugin]\x1b[0m External session reconnected: ${openuiSessionId || claudeSessionId}`);
+
+      // Broadcast reconnection to control clients
+      broadcastControl({
+        type: "session_reconnected",
+        sessionId: openuiSessionId || claudeSessionId,
+        nodeId: session.nodeId,
+      });
+    }
+
     // Store Claude session ID mapping if we have it
     if (claudeSessionId && !session.claudeSessionId) {
       session.claudeSessionId = claudeSessionId;
+      // Index for future O(1) lookups (find the sessionId for this session)
+      const sessionId = [...sessions.entries()].find(([_, s]) => s === session)?.[0];
+      if (sessionId) {
+        indexClaudeSession(sessionId, claudeSessionId);
+      }
     }
 
     // Handle pre_tool/post_tool for permission detection
@@ -485,6 +584,15 @@ apiRoutes.post("/status-update", async (c) => {
     // Store user prompt if provided (from UserPromptSubmit)
     if (userPrompt) {
       session.lastUserPrompt = userPrompt;
+      // Broadcast to transcript clients that there's new content
+      const sessionId = [...sessions.entries()].find(([_, s]) => s === session)?.[0];
+      if (sessionId) {
+        broadcastTranscript(sessionId, {
+          type: "user",
+          content: userPrompt,
+          timestamp: new Date().toISOString(),
+        });
+      }
     }
 
     // Store transcript path if provided (for external session history)
@@ -500,6 +608,17 @@ apiRoutes.post("/status-update", async (c) => {
       session.currentTool = toolName;
       session.currentToolInput = toolInput;
       session.preToolTime = Date.now();
+
+      // Broadcast tool use to transcript clients
+      const sessionId = [...sessions.entries()].find(([_, s]) => s === session)?.[0];
+      if (sessionId && toolName) {
+        broadcastTranscript(sessionId, {
+          type: "tool",
+          tool: toolName,
+          content: typeof toolInput === "string" ? toolInput : JSON.stringify(toolInput, null, 2),
+          timestamp: new Date().toISOString(),
+        });
+      }
 
       // Clear any existing permission timeout
       if (session.permissionTimeout) {
@@ -594,19 +713,8 @@ apiRoutes.post("/status-update", async (c) => {
       customName: `External (${claudeSessionId ? claudeSessionId.slice(0, 8) : 'auto'})`,
     });
 
-    // Apply the status update to the newly registered session
-    session.status = status === "pre_tool" || status === "post_tool" ? "running" : status;
-    session.pluginReportedStatus = true;
-    session.lastPluginStatusTime = Date.now();
-    session.lastHookEvent = hookEvent;
-
-    if (toolName) {
-      session.currentTool = toolName;
-    }
-
-    if (transcriptPath) {
-      session.transcriptPath = transcriptPath;
-    }
+    // Apply the status update using consolidated helper
+    applyStatusUpdate(session, status, hookEvent, toolName, toolInput, userPrompt, transcriptPath);
 
     saveState(sessions);
 

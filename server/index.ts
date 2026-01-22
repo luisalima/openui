@@ -17,12 +17,28 @@ const log = QUIET ? () => {} : console.log.bind(console);
 // Global control WebSocket clients (for broadcasting session events)
 export const controlClients = new Set<ServerWebSocket<WebSocketData>>();
 
+// Transcript WebSocket clients per session (for real-time transcript updates)
+export const transcriptClients = new Map<string, Set<ServerWebSocket<WebSocketData>>>();
+
 // Broadcast to all control clients
 export function broadcastControl(event: { type: string; [key: string]: any }) {
   const message = JSON.stringify(event);
   for (const client of controlClients) {
     if (client.readyState === 1) {
       client.send(message);
+    }
+  }
+}
+
+// Broadcast transcript update to subscribed clients
+export function broadcastTranscript(sessionId: string, message: { type: string; content?: string; tool?: string; role?: string; timestamp?: string }) {
+  const clients = transcriptClients.get(sessionId);
+  if (!clients) return;
+
+  const data = JSON.stringify({ type: "transcript", message });
+  for (const client of clients) {
+    if (client.readyState === 1) {
+      client.send(data);
     }
   }
 }
@@ -62,16 +78,41 @@ Bun.serve<WebSocketData>({
       return new Response("WebSocket upgrade failed", { status: 400 });
     }
 
+    // Per-session WebSocket for transcript updates (external sessions)
+    if (url.pathname === "/ws/transcript") {
+      const sessionId = url.searchParams.get("sessionId");
+      if (!sessionId) return new Response("Session ID required", { status: 400 });
+
+      const session = sessions.get(sessionId);
+      if (!session) return new Response("Session not found", { status: 404 });
+
+      const upgraded = server.upgrade(req, { data: { sessionId, isTranscript: true } });
+      if (upgraded) return undefined;
+      return new Response("WebSocket upgrade failed", { status: 400 });
+    }
+
     return app.fetch(req);
   },
   websocket: {
     open(ws) {
-      const { sessionId } = ws.data;
+      const { sessionId, isTranscript } = ws.data;
 
       // Handle control WebSocket
       if (sessionId === "_control") {
         controlClients.add(ws);
         log(`\x1b[38;5;245m[ws]\x1b[0m Control client connected (${controlClients.size} total)`);
+        return;
+      }
+
+      // Handle transcript WebSocket
+      if (isTranscript) {
+        if (!transcriptClients.has(sessionId)) {
+          transcriptClients.set(sessionId, new Set());
+        }
+        transcriptClients.get(sessionId)!.add(ws);
+        log(`\x1b[38;5;245m[ws]\x1b[0m Transcript client connected for ${sessionId}`);
+        // Send initial ack
+        ws.send(JSON.stringify({ type: "connected", sessionId }));
         return;
       }
 
@@ -130,12 +171,25 @@ Bun.serve<WebSocketData>({
       }
     },
     close(ws) {
-      const { sessionId } = ws.data;
+      const { sessionId, isTranscript } = ws.data;
 
       // Handle control client disconnect
       if (sessionId === "_control") {
         controlClients.delete(ws);
         log(`\x1b[38;5;245m[ws]\x1b[0m Control client disconnected (${controlClients.size} total)`);
+        return;
+      }
+
+      // Handle transcript client disconnect
+      if (isTranscript) {
+        const clients = transcriptClients.get(sessionId);
+        if (clients) {
+          clients.delete(ws);
+          if (clients.size === 0) {
+            transcriptClients.delete(sessionId);
+          }
+        }
+        log(`\x1b[38;5;245m[ws]\x1b[0m Transcript client disconnected from ${sessionId}`);
         return;
       }
 

@@ -82,6 +82,9 @@ export interface PersistedNode {
   notes?: string;
   isExternal?: boolean;
   position: { x: number; y: number };
+  // External session fields for reconnection after server restart
+  claudeSessionId?: string;
+  transcriptPath?: string;
 }
 
 export interface PersistedCategory {
@@ -109,4 +112,5 @@ export interface Agent {
 
 export interface WebSocketData {
   sessionId: string;
+  isTranscript?: boolean; // True for transcript WebSocket connections
 }

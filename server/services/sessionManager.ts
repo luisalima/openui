@@ -205,6 +205,20 @@ const MAX_BUFFER_SIZE = 1000;
 
 export const sessions = new Map<string, Session>();
 
+// Secondary index: claudeSessionId -> sessionId for O(1) lookups
+export const claudeSessionIndex = new Map<string, string>();
+
+// Update the index when a claudeSessionId is set
+export function indexClaudeSession(sessionId: string, claudeSessionId: string) {
+  claudeSessionIndex.set(claudeSessionId, sessionId);
+}
+
+// Find session by Claude session ID (O(1) lookup)
+export function findByClaudeSessionId(claudeSessionId: string): Session | undefined {
+  const sessionId = claudeSessionIndex.get(claudeSessionId);
+  return sessionId ? sessions.get(sessionId) : undefined;
+}
+
 export function createSession(params: {
   sessionId: string;
   agentId: string;
@@ -390,19 +404,23 @@ export function registerExternalSession(params: {
   cwd?: string;
   nodeId?: string;
   customName?: string;
+  customColor?: string;
 }): Session {
-  const { sessionId, claudeSessionId, cwd, nodeId, customName } = params;
+  const { sessionId, claudeSessionId, cwd, nodeId, customName, customColor } = params;
 
   // Check if session already exists
   const existing = sessions.get(sessionId);
   if (existing) {
     log(`\x1b[38;5;141m[external]\x1b[0m Session ${sessionId} already exists, updating`);
-    if (claudeSessionId) existing.claudeSessionId = claudeSessionId;
+    if (claudeSessionId) {
+      existing.claudeSessionId = claudeSessionId;
+      indexClaudeSession(sessionId, claudeSessionId);
+    }
     return existing;
   }
 
   const gitBranch = cwd ? getGitBranch(cwd) : null;
-  const generatedNodeId = nodeId || `external-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  const generatedNodeId = nodeId || `external-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
 
   const session: Session = {
     pty: null, // No PTY for external sessions
@@ -419,6 +437,7 @@ export function registerExternalSession(params: {
     lastInputTime: 0,
     recentOutputSize: 0,
     customName: customName || "External Session",
+    customColor,
     nodeId: generatedNodeId,
     isRestored: false,
     isExternal: true, // Mark as external
@@ -426,6 +445,9 @@ export function registerExternalSession(params: {
   };
 
   sessions.set(sessionId, session);
+  if (claudeSessionId) {
+    indexClaudeSession(sessionId, claudeSessionId);
+  }
   log(`\x1b[38;5;141m[external]\x1b[0m Registered external session ${sessionId} (claude: ${claudeSessionId || 'unknown'})`);
   return session;
 }
@@ -461,9 +483,19 @@ export function restoreSessions() {
       nodeId: node.nodeId,
       isRestored: true,
       isExternal: node.isExternal,
+      // Restore external session fields for reconnection
+      claudeSessionId: node.claudeSessionId,
+      transcriptPath: node.transcriptPath,
     };
 
     sessions.set(node.sessionId, session);
-    log(`\x1b[38;5;245m[restore]\x1b[0m Restored ${node.sessionId} (${node.agentName}) branch: ${gitBranch || 'none'}`);
+
+    // Rebuild the claudeSessionId index for external sessions
+    if (node.claudeSessionId) {
+      indexClaudeSession(node.sessionId, node.claudeSessionId);
+      log(`\x1b[38;5;245m[restore]\x1b[0m Indexed claude session ${node.claudeSessionId} -> ${node.sessionId}`);
+    }
+
+    log(`\x1b[38;5;245m[restore]\x1b[0m Restored ${node.sessionId} (${node.agentName}) branch: ${gitBranch || 'none'}${node.isExternal ? ' [external]' : ''}`);
   }
 }

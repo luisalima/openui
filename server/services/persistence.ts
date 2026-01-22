@@ -56,6 +56,9 @@ export function saveState(sessions: Map<string, Session>) {
       icon: session.icon,
       isExternal: session.isExternal,
       position: session.position || existingNode?.position || { x: 0, y: 0 },
+      // External session fields for reconnection
+      claudeSessionId: session.claudeSessionId,
+      transcriptPath: session.transcriptPath,
     });
 
     saveBuffer(sessionId, session.outputBuffer);

@@ -29,27 +29,22 @@ The plugin uses Claude Code hooks to report status:
 
 ## Configuration
 
-The plugin sends status to `localhost:4242` by default. To change:
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OPENUI_HOST` | `localhost` | Host where OpenUI server is running |
+| `OPENUI_PORT` | `6969` | Port where OpenUI server is running |
+| `OPENUI_SESSION_ID` | (none) | Session ID for external sessions |
+| `OPENUI_SECRET` | (none) | Shared secret for authentication |
 
-```bash
-export OPENUI_HOST=localhost
-export OPENUI_PORT=4242
-```
+## External Sessions
 
-## Verify Installation
-
-In Claude Code:
-```
-/plugins
-```
-
-You should see `openui-status` listed.
+See the main [README](../README.md#external-sessions) for connecting Claude sessions from other terminals.
 
 ## Troubleshooting
 
-1. Check plugin is loaded: `/plugins`
-2. Check OpenUI is running on port 4242
-3. Check OpenUI server logs for `[plugin]` messages
+- **Verify plugin loaded:** `/plugins` should show `openui-status`
+- **Check connectivity:** Ensure `OPENUI_PORT` matches OpenUI server (default 6969, dev 4242)
+- **Debug log:** `tail -f /tmp/openui-status-debug.log`
 
 ## Uninstall
 

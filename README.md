@@ -66,6 +66,12 @@ bunx @fallom/openui
 - Session persistence and restore
 - Version check and empty state UI
 
+### External Sessions
+- Connect existing Claude Code sessions running in other terminals
+- Real-time status updates and transcript viewing
+- Sessions persist and reconnect after server restart
+- Organize external sessions alongside spawned agents on the canvas
+
 ### Coming Soon: Linear Integration
 - Start sessions directly from Linear tickets
 - Auto-create isolated branches per ticket
@@ -124,6 +130,23 @@ You can also test manually:
 ```bash
 claude --plugin-dir $(pwd)/claude-code-plugin
 ```
+
+## External Sessions
+
+Connect Claude Code sessions running in other terminals to OpenUI for visibility without giving up your preferred terminal workflow.
+
+```bash
+openui-connect                          # Basic usage
+openui-connect --name="Feature Work"    # Custom name
+openui-connect --color="#8B5CF6"        # Custom color
+openui-connect -- --model opus          # Pass args to Claude
+```
+
+Or manually: set `OPENUI_SESSION_ID`, `OPENUI_PORT`, `OPENUI_HOST` env vars and start Claude (the plugin loads automatically if installed).
+
+**Capabilities:** Real-time status, transcript viewing with search, canvas organization, persistence across restarts.
+
+**Limitations:** Read-only (interact with Claude in your terminal, not through OpenUI).
 
 ## Requirements
 

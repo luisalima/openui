@@ -38,6 +38,9 @@ export function saveState(sessions: Map<string, Session>) {
     categories: savedState.categories || [],
   };
 
+  // Track which sessions we've saved
+  const savedSessionIds = new Set<string>();
+
   for (const [sessionId, session] of sessions) {
     // Preserve existing position if we have one
     const existingNode = savedState.nodes.find(n => n.sessionId === sessionId);
@@ -61,7 +64,16 @@ export function saveState(sessions: Map<string, Session>) {
       transcriptPath: session.transcriptPath,
     });
 
+    savedSessionIds.add(sessionId);
     saveBuffer(sessionId, session.outputBuffer);
+  }
+
+  // Preserve external sessions from saved state that aren't currently active
+  // This prevents losing external session data when the server restarts
+  for (const node of savedState.nodes) {
+    if (node.isExternal && !savedSessionIds.has(node.sessionId)) {
+      state.nodes.push(node);
+    }
   }
 
   try {
